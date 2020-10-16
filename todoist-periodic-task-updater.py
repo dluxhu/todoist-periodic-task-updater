@@ -162,17 +162,19 @@ def main():
 
 
     def process_project(project):
+        if project.data['is_archived']:
+            logging.debug('****** Project %s is archived, skipping.', project.data['name'])
+            return
         project_type = get_project_type(project)
-        if project_type:
-            logging.debug('Project %s being processed as %s', project['name'], project_type)
+        logging.debug('****** Project %s being processed as %s', project.data['name'], project_type)
 
-            # Get all items for the project, sort by the item_order field.
-            items = sorted(api.items.all(lambda x: x['project_id'] == project['id']), key=lambda x: x['child_order'])
+        # Get all items for the project, sort by the item_order field.
+        items = sorted(api.items.all(lambda x: x.data['project_id'] == project.data['id']), key=lambda x: x.data['child_order'])
 
-            top_level_items = get_subitems(items)
+        top_level_items = get_subitems(items)
 
-            for idx, item in enumerate(top_level_items):
-                process_item(items, item, project_type, idx == 0)
+        for idx, item in enumerate(top_level_items):
+            process_item(items, item, project_type, idx == 0)
 
     # Main code
     while True:
@@ -193,7 +195,7 @@ def main():
                 logging.debug('No changes queued, skipping sync.')
 
         if args.periodical_sync_sec is None:
-            break;
+            break
 
         logging.debug('Sleeping for %d seconds', args.periodical_sync_sec)
         time.sleep(args.periodical_sync_sec)
