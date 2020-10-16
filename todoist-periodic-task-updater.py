@@ -122,10 +122,12 @@ def main():
         tree_activation_mode = ('activate' if (processing_mode == 'serial' and is_first) or processing_mode == 'parallel' else
             'inactivate' if processing_mode == 'serial' or processing_mode == 'inactive' else None)
 
-        item_processing_mode = ('activate' if tree_activation_mode == 'activate' and len(child_items) == 0 else
-            'inactivate' if tree_activation_mode == 'activate' or tree_activation_mode == 'inactivate' else None)
-
         item_type = get_item_type(item)
+
+        is_considered_leaf = len(child_items) == 0 or item_type is None
+
+        item_processing_mode = ('activate' if tree_activation_mode == 'activate' and is_considered_leaf else
+            'inactivate' if tree_activation_mode == 'activate' or tree_activation_mode == 'inactivate' else None)
 
         # | tree_activation_mode | item_type | child_processing_mode |
         # |----------------------|-----------|-----------------------|
