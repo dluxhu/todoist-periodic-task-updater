@@ -54,6 +54,8 @@ docs/_build/
 # PyBuilder
 target/
 
+run.sh
+
 # IDEA
 .idea/
 .vscode/launch.json
