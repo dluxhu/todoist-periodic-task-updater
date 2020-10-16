@@ -1,17 +1,17 @@
 from setuptools import setup
 
 setup(
-    name='NextAction',
-    version='0.4',
-    py_modules=['nextaction'],
-    url='https://github.com/nikdoof/NextAction',
+    name='ToroistPeriodicTaskUpdater',
+    version='0.1',
+    py_modules=['todoist-periodic-task-updater'],
+    url='https://github.com/dluxhu/todoist-periodic-task-updater',
     license='MIT',
-    author='Andrew Williams',
-    author_email='andy@tensixtyone.com',
-    description='A more GTD-like workflow for Todoist. Uses the REST API to add and remove a @next_action label from tasks.',
+    author='Balazs Szabo',
+    author_email='1@dlux.cc',
+    description='Updates Todoist tasks based on various rules.',
     entry_points={
         "console_scripts": [
-            "nextaction=nextaction:main",
+            "todoist-periodic-task-updater=todoist-periodic-task-updater:main",
         ],
     },
     install_requires=[
