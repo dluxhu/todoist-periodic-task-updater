@@ -228,7 +228,7 @@ def main():
         try:
             api.sync()
             timezone = pytz.timezone(api.user.state['user']['tz_info']['timezone'])
-            now = timezone.localize(datetime.now())
+            now = datetime.now(tz = timezone)
             logging.debug('Timezone: %s, now: %s', timezone, now)
 
             for project in api.projects.all():
