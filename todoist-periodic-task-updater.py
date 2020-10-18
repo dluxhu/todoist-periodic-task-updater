@@ -154,12 +154,11 @@ def main():
             set_date(item)
             remove_nodate_label(item)
         elif item_processing_mode == 'inactivate':
-            add_nodate_label(item)
-            remove_date(item)
+            if item.data['due'] is None:
+                add_nodate_label(item)
 
         for idx, child in enumerate(child_items):
             process_item(items, child, child_processing_mode, idx == 0)
-
 
     def process_project(project):
         if project.data['is_archived']:
