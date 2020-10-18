@@ -21,3 +21,11 @@ Custom rules
 * An inactive leaf task has a `NoDate` label and have its due date removed.
 * Non-leaf _serial_ or _parallel_ _active_ or _inactive_ tasks are considered as inactive (`NoDate` is set, no due date).
 * Non-leaf tasks that are neither _serial_ nor _paralell_ are treated as leaf tasks.
+
+Recurring task handling:
+=========================
+
+* A recurring task can be also serial or parallel (identified by the postfixes mentioned above)
+* If a recurring task reached due time, all of the completed subtasks will be uncompleted and the recurring task itself will be marked as completed (= moved to the next time).
+* A recurring task or its subtasks can be _serial_ or _paralell_, the same way as non-recurring tasks.
+* If a _serial_ or _parallel_ recurring task has recurring children, then it is always treated as an incomplete task, so it might break the _serial_ algorithm.

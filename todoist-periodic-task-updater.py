@@ -2,23 +2,29 @@
 
 import logging
 import argparse
+import pytz
 
 # noinspection PyPackageRequirements
 from todoist.api import TodoistAPI
 
+import socket
 import time
 import sys
 from datetime import datetime
 
+timezone = None
+now = None
 
-def get_subitems(items, parent_item=None):
+LAST_RUN_CONST = '$TodoistUpdaterLastRun$'
+
+def get_subitems(items, parent_item=None, include_completed=False):
     """Search a flat item list for child items."""
     parent_id = None
     if parent_item:
-        parent_id = parent_item.data['id']
+        parent_id = parent_item['id']
     result_items = []
     for item in items:
-        if item.data['date_completed'] is None and item.data['parent_id'] == parent_id:
+        if (include_completed or item['date_completed'] is None) and item['parent_id'] == parent_id:
             result_items.append(item)
     return result_items
 
@@ -94,71 +100,113 @@ def main():
         item.update(labels=labels)
 
     def set_date(item):
-        if item.data['due'] is None:
+        if item['due'] is None:
             item.update(due={'string' : 'today'})
             logging.debug('Setting due date to today for item %s', item['content'])
 
-    def remove_date(item):
-        if not item.data['due'] is None:
-            item.update(due=None)
-            logging.debug('Removing due date from item %s', item['content'])
+    def parse_due(item):
+        due = item['due']
+        if due is None: return False
+        tz = due['timezone'] if due['timezone'] is not None else timezone
 
-    def process_item(items, item, processing_mode, is_first):
+        try:
+            due_date = datetime.strptime(due['date'], '%Y-%m-%dT%H:%M:%S')
+        except:
+            due_date = datetime.strptime(due['date'], '%Y-%m-%d')
+
+        return tz.localize(due_date)
+
+    def is_active(item):
+        due = parse_due(item)
+        if due is None: return False
+        logging.debug("is_active: due parsed: %s", due)
+        return due <= now
+
+    def uncomplete(item):
+        if item['date_completed'] is not None:
+            logging.debug('Uncompleting task')
+            item.uncomplete()
+            if item['due'] is not None:
+                item.update(due=None)
+
+    def process_item(item, processing_mode, is_first, items):
         """
         processing_mode: 'serial', 'parallel', 'inactive' (inactive part of serial), null (parent does not specify)
         """
-        # # If its too far in the future, remove the next_action tag and skip
-        # if args.hide_future > 0 and 'due_date_utc' in item.data and item['due_date_utc'] is not None:
-        #     due_date = datetime.strptime(item['due_date_utc'], '%a %d %b %Y %H:%M:%S +0000')
-        #     future_diff = (due_date - datetime.utcnow()).total_seconds()
-        #     if future_diff >= (args.hide_future * 86400):
-        #         remove_nodate_label(item, label_id)
-        #         continue
 
         logging.debug('** Processing item: %s, processing_mode: %s, is_first: %s', item['content'], processing_mode, is_first)
 
-        child_items = get_subitems(items, item)
-
-        tree_activation_mode = ('activate' if (processing_mode == 'serial' and is_first) or processing_mode == 'parallel' else
-            'inactivate' if processing_mode == 'serial' or processing_mode == 'inactive' else None)
-
+        due_obj = item['due']
+        is_recurring = due_obj['is_recurring'] if not due_obj is None else False
+        is_active_recurring = is_recurring and is_active(item)
+        child_items = get_subitems(items, item, include_completed = is_active_recurring)
         item_type = get_item_type(item)
 
-        is_considered_leaf = len(child_items) == 0 or item_type is None
+        is_considered_leaf = len(child_items) == 0 # why is it here??? or item_type is None
 
-        item_processing_mode = ('activate' if tree_activation_mode == 'activate' and is_considered_leaf else
-            'inactivate' if tree_activation_mode == 'activate' or tree_activation_mode == 'inactivate' else None)
+        # Defines how the item and it's subtasks (if any) should be processed:
+        # * 'activate': make the tree active: put at least one element into the 'Today' view.
+        # * 'take': take ownership of the tree: it will be owned by this automation.
+        # * <None>: do not change the tree
+        tree_prcessing_mode = (
+            'activate'
+                if ((processing_mode == 'serial' and is_first)
+                    or processing_mode == 'parallel'
+                    or is_active_recurring
+                    or item_type is not None)
+            else 'take'
+                if processing_mode == 'serial' or processing_mode == 'inactive'
+            else None)
 
-        # | tree_activation_mode | item_type | child_processing_mode |
+        # Defines how to process the actual item:
+        # * 'activate': make item visible in the 'Today' view
+        # * 'take': take ownership of the item: it will be owned by this automation.
+        # * <None>: does not change the tree
+        item_processing_mode = (
+            'activate'
+                if tree_prcessing_mode == 'activate' and is_considered_leaf
+            else 'take'
+                if tree_prcessing_mode == 'activate' or tree_prcessing_mode == 'take'
+            else None)
+
+        # | tree_processing_mode | item_type | child_processing_mode |
         # |----------------------|-----------|-----------------------|
         # | activate             | serial    | serial                |
         # | activate             | parallel  | parallel              |
         # | activate             | <None>    | <None>                |
-        # | inactivate           | serial    | inactive              |
-        # | inactivate           | parallel  | inactive              |
-        # | inactivate           | <None>    | <None>                |
+        # | take                 | serial    | inactive              |
+        # | take                 | parallel  | inactive              |
+        # | take                 | <None>    | <None>                |
         # | <None>               | serial    | serial                |
         # | <None>               | parallel  | parallel              |
         # | <None>               | <None>    | <None>                |
 
         child_processing_mode = (
             None if item_type == None
-            else 'inactive' if tree_activation_mode == 'inactivate'
+            else 'inactive' if tree_prcessing_mode == 'take'
             else item_type
         )
 
-        logging.debug('Tree activation mode: %s, child items: %d, item processing mode: %s, Item type: %s, Child processing mode: %s',
-            tree_activation_mode, len(child_items), item_processing_mode, item_type, child_processing_mode)
+        logging.debug('Is Recurring: (%s, %s), Tree processing mode: %s, child items: %d, item processing mode: %s, Item type: %s, Child processing mode: %s',
+            is_recurring, is_active_recurring, tree_prcessing_mode, len(child_items), item_processing_mode, item_type, child_processing_mode)
 
         if item_processing_mode == 'activate':
+            uncomplete(item)
             set_date(item)
             remove_nodate_label(item)
-        elif item_processing_mode == 'inactivate':
-            if item.data['due'] is None:
+        elif item_processing_mode == 'take':
+            uncomplete(item)
+            if item['due'] is None:
                 add_nodate_label(item)
+            if is_active_recurring:
+                logging.debug('Completing recurring task.')
+                item.close()
+
+        if item['content'].startswith(LAST_RUN_CONST):
+            item.update(content = LAST_RUN_CONST + ': %s %s' % (socket.gethostname(), now))
 
         for idx, child in enumerate(child_items):
-            process_item(items, child, child_processing_mode, idx == 0)
+            process_item(child, child_processing_mode, idx == 0, items)
 
     def process_project(project):
         if project.data['is_archived']:
@@ -173,15 +221,16 @@ def main():
         top_level_items = get_subitems(items)
 
         for idx, item in enumerate(top_level_items):
-            process_item(items, item, project_type, idx == 0)
+            process_item(item, project_type, idx == 0, items)
 
     # Main code
     while True:
         try:
             api.sync()
-        except Exception as e:
-            logging.exception('Error trying to sync with Todoist API: %s' % str(e))
-        else:
+            timezone = pytz.timezone(api.user.state['user']['tz_info']['timezone'])
+            now = timezone.localize(datetime.now())
+            logging.debug('Timezone: %s, now: %s', timezone, now)
+
             for project in api.projects.all():
                 process_project(project)
 
@@ -192,6 +241,8 @@ def main():
                     api.commit()
             else:
                 logging.debug('No changes queued, skipping sync.')
+        except Exception as e:
+            logging.exception('Error trying to sync with Todoist API: %s' % str(e))
 
         if args.periodical_sync_sec is None:
             break
