@@ -7,6 +7,7 @@ import pytz
 # noinspection PyPackageRequirements
 from todoist.api import TodoistAPI
 
+import re
 import socket
 import time
 import sys
@@ -75,13 +76,43 @@ def main():
         elif name.endswith(args.serial_suffix):
             return 'serial'
 
-    def get_item_type(item):
+    class ItemMetadata:
+        def __init__(self):
+            self.type = None
+            self.delay = None
+
+    def has_suffix(str, suffix):
+        if str.endswith(suffix):
+            return (True, str[0:-(len(suffix))])
+        else:
+            return (False, str)
+
+    def has_delay_suffix(str):
+        m = re.match('(.*){(.*?)}', str)
+        if m:
+            return (m.group(2), m.group(1))
+        else:
+            return (None, str)
+
+    def parse_item_metadata(item):
         """Identifies how a item with sub items should be handled."""
         name = item['content'].strip()
-        if name.endswith(args.parallel_suffix):
-            return 'parallel'
-        elif name.endswith(args.serial_suffix):
-            return 'serial'
+        metadata = ItemMetadata()
+        while True:
+            (is_parallel, name) = has_suffix(name, args.parallel_suffix)
+            if is_parallel:
+                metadata.type = 'parallel'
+                continue
+            (is_serial, name) = has_suffix(name, args.serial_suffix)
+            if is_serial:
+                metadata.type = 'serial'
+                continue
+            (delay_info, name) = has_delay_suffix(name)
+            if delay_info is not None:
+                metadata.delay = delay_info
+                continue
+            break
+        return metadata
 
     def add_nodate_label(item):
         if nodate_label_id in item['labels']:
@@ -99,10 +130,11 @@ def main():
         labels.remove(nodate_label_id)
         item.update(labels=labels)
 
-    def set_date(item):
+    def set_date(item, metadata):
         if item['due'] is None:
-            item.update(due={'string' : 'today'})
-            logging.debug('Setting due date to today for item %s', item['content'])
+            new_due = metadata.delay if metadata.delay is not None else 'today'
+            item.update(due={'string' : new_due })
+            logging.debug('Setting due date to %s for item %s', new_due, item['content'])
 
     def parse_due(item):
         due = item['due']
@@ -140,9 +172,9 @@ def main():
         is_recurring = due_obj['is_recurring'] if not due_obj is None else False
         is_active_recurring = is_recurring and is_active(item)
         child_items = get_subitems(items, item, include_completed = is_active_recurring)
-        item_type = get_item_type(item)
+        item_metadata = parse_item_metadata(item)
 
-        is_considered_leaf = len(child_items) == 0 # why is it here??? or item_type is None
+        is_considered_leaf = len(child_items) == 0 # why is it here??? or item_metadata.type is None
 
         # Defines how the item and it's subtasks (if any) should be processed:
         # * 'activate': make the tree active: put at least one element into the 'Today' view.
@@ -153,7 +185,7 @@ def main():
                 if ((processing_mode == 'serial' and is_first)
                     or processing_mode == 'parallel'
                     or is_active_recurring
-                    or item_type is not None)
+                    or item_metadata.type is not None)
             else 'take'
                 if processing_mode == 'serial' or processing_mode == 'inactive'
             else None)
@@ -182,17 +214,17 @@ def main():
         # | <None>               | <None>    | <None>                |
 
         child_processing_mode = (
-            None if item_type == None
+            None if item_metadata.type == None
             else 'inactive' if tree_prcessing_mode == 'take'
-            else item_type
+            else item_metadata.type
         )
 
         logging.debug('Is Recurring: (%s, %s), Tree processing mode: %s, child items: %d, item processing mode: %s, Item type: %s, Child processing mode: %s',
-            is_recurring, is_active_recurring, tree_prcessing_mode, len(child_items), item_processing_mode, item_type, child_processing_mode)
+            is_recurring, is_active_recurring, tree_prcessing_mode, len(child_items), item_processing_mode, item_metadata.type, child_processing_mode)
 
         if item_processing_mode == 'activate':
             uncomplete(item)
-            set_date(item)
+            set_date(item, item_metadata)
             remove_nodate_label(item)
         elif item_processing_mode == 'take':
             uncomplete(item)
