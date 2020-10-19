@@ -151,7 +151,7 @@ def main():
     def is_active(item):
         due = parse_due(item)
         if due is None: return False
-        logging.debug("is_active: due parsed: %s", due)
+        # logging.debug("is_active: due parsed: %s", due)
         return due <= now
 
     def uncomplete(item):
@@ -184,10 +184,11 @@ def main():
             'activate'
                 if ((processing_mode == 'serial' and is_first)
                     or processing_mode == 'parallel'
-                    or is_active_recurring
-                    or item_metadata.type is not None)
+                    or is_active_recurring)
             else 'take'
-                if processing_mode == 'serial' or processing_mode == 'inactive'
+                if (processing_mode == 'serial'
+                    or processing_mode == 'inactive'
+                    or item_metadata.type is not None)
             else None)
 
         # Defines how to process the actual item:
