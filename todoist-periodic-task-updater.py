@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 
-import logging
 import argparse
 import pytz
 
 # noinspection PyPackageRequirements
 from todoist.api import TodoistAPI
 
+import logging
 import re
 import socket
 import time
@@ -16,7 +16,135 @@ from datetime import datetime
 timezone = None
 now = None
 
-LAST_RUN_CONST = '$TodoistUpdaterLastRun$'
+
+class Processor:
+    def __init__(self, api):
+        self.api = api
+    
+    def process(self):
+        debug_log(0, f'Processing: {type(self).__name__}')
+        for project in self.api.projects.all():
+            self.process_project_recursively(project)
+
+    class Data:
+        def __repr__(self):
+            map = {}
+            self.keys_to_map(map)
+            return str(map) 
+
+        def keys_to_map(self, map):
+            pass
+
+        def debug(self, str):
+            print(str)
+
+        def process(self):
+            pass
+
+    class ProjectData(Data):
+        def __init__(self, project, items):
+            self.project = project
+            self.items = items
+
+        def keys_to_map(self, map):
+            map['project'] = self.project.data['name']
+            map['items'] = len(self.items)
+
+        def debug(self, str):
+            debug_log(1, str)
+
+    def create_project_data(self, project, items):
+        return self.ProjectData(project, items)
+
+    def process_project_recursively(self, project):
+        if project.data['is_archived']:
+            debug_log(1, f'Project {project.data["name"]} is archived, skipping.')
+            return
+
+        items = sorted(self.api.items.all(lambda x: x.data['project_id'] == project.data['id']), key=lambda x: x.data['child_order'])
+
+        project_data = self.create_project_data(project, items)
+        project_data.debug(f'Processing project: {project_data}')
+        project_data.process() 
+
+        top_level_items = self.get_subitems(project_data)
+
+        for idx, item in enumerate(top_level_items):
+            self.process_item_recursively(item, None, project_data, idx)
+
+    class ItemData(Data):
+        def __init__(self, item, parent_item_data, parent_project_data, idx):
+            self.item = item
+            self.parent_item_data = parent_item_data
+            self.parent_project_data = parent_project_data
+            self.idx = idx
+            self.process_subtasks = True
+            self.indent = parent_item_data.indent + 1 if parent_item_data else 2
+
+        def keys_to_map(self, map):
+            map['item'] = self.item['content']
+            map['idx'] = self.idx
+            if self.parent_item_data:
+                map['parent_item'] = self.parent_item_data.item['content']
+            map['parent_project'] = self.parent_project_data.project.data['name']
+            map['process_subtasks'] = self.process_subtasks
+
+        def debug(self, str):
+            debug_log(self.indent, str)
+
+    def create_item_data(self, item, parent_item_data, project_data, idx):
+        return self.ItemData(item, parent_item_data, project_data, idx)
+
+    def process_item_recursively(self, item, parent_item_data, project_data, idx):
+        item_data = self.create_item_data(item, parent_item_data, project_data, idx)
+        item_data.debug(f'Processing item: {item_data}')
+        item_data.process()
+
+        if not item_data.process_subtasks:
+            return
+        
+        child_items = self.get_subitems(project_data, parent_item = item)
+
+        for idx, child in enumerate(child_items):
+            self.process_item_recursively(child, item_data, project_data, idx)
+
+    def get_subitems(self, project_data, parent_item = None, include_completed = False):
+        """Search a flat item list for child items."""
+        parent_id = None
+        if parent_item:
+            parent_id = parent_item['id']
+        result_items = []
+        for item in project_data.items:
+            if (include_completed or item['date_completed'] is None) and item['parent_id'] == parent_id:
+                result_items.append(item)
+        return result_items
+
+
+class LastRunUpdaterProcessor(Processor):
+    LAST_RUN_CONST = '$TodoistUpdaterLastRun$'
+
+    def create_item_data(self, item, parent_item_data, project_data, idx):
+        data = super().create_item_data(item, parent_item_data, project_data, idx)
+        
+        def process():
+            data.process_subtasks = False
+            if item['content'].startswith(LastRunUpdaterProcessor.LAST_RUN_CONST):
+                item.update(content = LastRunUpdaterProcessor.LAST_RUN_CONST + ': %s %s' % (socket.gethostname(), now))
+                data.debug('Updating time and date')
+
+        data.process = process
+        return data
+
+def debug_log(indent, str):
+    # indents:
+    # 0: global
+    # 1: project
+    # 2: top level tasks
+    # 3: 1st level subtasks
+    # ...
+    logging.debug(('  ' * indent) + str)
+
+### REWRITTEN CODE ABOVE
 
 def get_subitems(items, parent_item=None, include_completed=False):
     """Search a flat item list for child items."""
@@ -242,9 +370,6 @@ def main():
                 logging.debug('Completing recurring task.')
                 item.close()
 
-        if item['content'].startswith(LAST_RUN_CONST):
-            item.update(content = LAST_RUN_CONST + ': %s %s' % (socket.gethostname(), now))
-
         for idx, child in enumerate(child_items):
             process_item(child, child_processing_mode, idx == 0, items)
 
@@ -263,16 +388,23 @@ def main():
         for idx, item in enumerate(top_level_items):
             process_item(item, project_type, idx == 0, items)
 
-    # Main code
-    while True:
+    class OldStyleProcessor:
+        def __init__(self, api):
+            self.api = api
+
+        def process(self):
+            for project in self.api.projects.all():
+                process_project(project)
+
+    def run_processor(processor):
         try:
+            global timezone, now
             api.sync()
             timezone = pytz.timezone(api.user.state['user']['tz_info']['timezone'])
             now = datetime.now(tz = timezone)
             logging.debug('Timezone: %s, now: %s', timezone, now)
 
-            for project in api.projects.all():
-                process_project(project)
+            processor(api).process()
 
             if len(api.queue):
                 logging.debug('changes queued for sync: %s', str(api.queue))
@@ -283,6 +415,11 @@ def main():
                 logging.debug('No changes queued, skipping sync.')
         except Exception as e:
             logging.exception('Error trying to sync with Todoist API: %s' % str(e))
+
+    # Main code
+    while True:
+        run_processor(OldStyleProcessor)
+        run_processor(LastRunUpdaterProcessor)
 
         if args.periodical_sync_sec is None:
             break
