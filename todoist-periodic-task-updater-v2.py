@@ -8,6 +8,7 @@ import socket
 import time
 import sys
 
+from collections import OrderedDict 
 from datetime import datetime
 from todoist.api import TodoistAPI
 
@@ -16,6 +17,7 @@ LAST_RUN_CONST = '$TodoistUpdaterV2LastRun$'
 timezone = None
 now = None
 args = None
+nodate_label_id = None
 
 def main():
     """Main process function."""
@@ -28,18 +30,26 @@ def main():
     while True:
         try:
             api.sync()
-            set_timezone_and_now()
+            set_timezone_and_now(api)
 
             for project in api.projects.all():
                 process_project(api, debuglog, project)
+
+            if len(api.queue):
+                debuglog.log('changes queued for sync: %s'% str(api.queue))
+                if args.execute:
+                    logging.debug('Commiting to Todoist.')
+                    api.commit()
+            else:
+                debuglog.log('No changes queued, skipping sync.')
 
         except Exception as e:
             logging.exception('Error trying to sync with Todoist API: %s' % str(e))
         
         if args.periodical_sync_sec is None:
-            break;
+            break
 
-        logging.debug('Sleeping for %d seconds', args.periodical_sync_sec)
+        debuglog.log('Sleeping for %d seconds' % args.periodical_sync_sec)
         time.sleep(args.periodical_sync_sec)
 
 def parse_args():
@@ -69,14 +79,15 @@ def connect(parentdebuglog):
     # Run the initial sync
     debuglog = parentdebuglog.sublogger('Connecting to the Todoist API')
     api = TodoistAPI(token=args.api_key)
-    debuglog.debug('Syncing the current state from the API')
+    debuglog.log('Syncing the current state from the API')
     api.sync()
 
     # Check the NoDate label exists
     labels = api.labels.all(lambda x: x['name'] == args.label)
     if len(labels) > 0:
+        global nodate_label_id
         nodate_label_id = labels[0]['id']
-        debuglog.debug('Label %s found as label id %d' % (args.label, nodate_label_id))
+        debuglog.log('Label %s found as label id %d' % (args.label, nodate_label_id))
     else:
         debuglog.error("Label %s doesn't exist, please create it." % args.label)
         sys.exit(1)
@@ -94,24 +105,37 @@ class DebugLogger:
         self.log(str)
         return DebugLogger(self.level + 1)
 
-def set_timezone_and_now():
+def set_timezone_and_now(api):
     global timezone, now
     timezone = pytz.timezone(api.user.state['user']['tz_info']['timezone'])
     now = datetime.now(tz = timezone)
     logging.debug('Timezone: %s, now: %s', timezone, now)
 
 class Props:
+    def __init__(self):
+        # to avoid pylint warnings:
+        self.name = None
+        self.is_parallel = None
+        self.is_serial = None
+
     def __repr__(self):
-        return vars(self)
+        p = vars(self)
+        pp = {}
+        for k in p.keys():
+            if p[k] is not None: pp[k] = p[k]
+        return str(pp)
 
 def process_project(api, parentdebuglog, project):
     if project.data['is_archived']:
-        parentdebuglog.debug('Project %s is archived, skipping.', project.data['name'])
+        parentdebuglog.log('Project %s is archived, skipping.' % project.data['name'])
         return
 
     props = Props()
     props.name = project['name'].strip()
-    set_type_from_name(props)
+    set_parallel_or_serial(props)
+    props.owned = None
+    props.tree_active = props.is_parallel or props.is_serial
+    props.is_recurring = None
 
     debuglog = parentdebuglog.sublogger('Project: %s' % props)
 
@@ -127,9 +151,60 @@ def process_project(api, parentdebuglog, project):
     for idx, item in enumerate(active_items):
         process_active_item(items, props, debuglog, item, idx, idx + len(completed_items))
 
-def set_type_from_name(props):
-    props.is_parallel = props.name.endswith(args.parallel_suffix)
-    props.is_serial = props.name.endswith(args.serial_suffix)
+def process_completed_item(items, parentprops, parentdebuglog, item, idx):
+    pass
+
+def process_active_item(items, parentprops, parentdebuglog, item, all_idx, active_idx):
+    props = Props()
+    props.name = item['content']
+    set_parallel_or_serial(props)
+
+    props.first = all_idx == 0
+    props.first_active = active_idx == 0
+
+    (completed_subitems, active_subitems) = get_subitems(items, item)
+
+    props.has_active_subitems = len(active_subitems) > 0
+
+    props.owned = parentprops.owned or props.is_parallel or props.is_serial
+    props.is_recurring = is_recurring(item)
+    props.is_due = is_due(item)
+
+    props.tree_active = (
+        (
+            parentprops.tree_active and (
+                parentprops.is_parallel or (parentprops.is_serial and props.first)
+            )
+        )
+        or (props.is_parallel or props.is_serial)
+    ) and not (
+        props.is_recurring and not props.is_due
+    )
+    
+    props.active = props.tree_active and not props.has_active_subitems
+
+    debuglog = parentdebuglog.sublogger('Item: %s' % props)
+
+    if props.active:
+        activate_item(item, props, debuglog)
+    elif props.owned:
+        own_item(item, debuglog)
+
+    if item['content'].startswith(LAST_RUN_CONST):
+        item.update(content = LAST_RUN_CONST + ': %s %s' % (socket.gethostname(), now))
+
+    for idx, item in enumerate(completed_subitems):
+        process_completed_item(items, props, debuglog, item, idx)
+
+    for idx, item in enumerate(active_subitems):
+        process_active_item(items, props, debuglog, item, idx, idx + len(completed_subitems))
+
+
+def set_parallel_or_serial(props):
+    name = props.name
+    (props.delay, name) = has_delay_suffix(name)
+    props.is_parallel = name.endswith(args.parallel_suffix)
+    props.is_serial = name.endswith(args.serial_suffix)
 
 def get_top_level_items(items):
     return get_subitems(items, None)
@@ -149,14 +224,73 @@ def get_subitems(items, parent_item):
                 completed_result_items.append(item)
     return (completed_result_items, active_result_items)
 
-def process_completed_item(items, parentprops, parentdebuglog, item, idx):
-    pass
+def has_delay_suffix(str):
+    m = re.match('(.*){(.*?)}', str)
+    if m:
+        return (m.group(2), m.group(1))
+    else:
+        return (None, str)
 
-def process_active_item(items, parentprops, parentdebuglog, item, all_idx, active_idx):
-    props = Props()
-    props.name = item['content']
-    props.first = all_idx == 0
-    props.first_active = active_idx == 0
+def own_item(item, debuglog):
+    uncomplete_item(item, debuglog)
+    if item['due'] is None:
+        add_nodate_label(item, debuglog)
 
-    debuglog = parentdebuglog.sublogger('Item: %s' % props)
+def activate_item(item, props, debuglog):
+    uncomplete_item(item, debuglog)
+    set_date(item, props, debuglog)
+    remove_nodate_label(item, debuglog)
 
+def uncomplete_item(item, debuglog):
+    if item['date_completed'] is not None:
+        debuglog.log('Uncompleting task')
+        item.uncomplete()
+        if item['due'] is not None:
+            item.update(due=None)
+
+def add_nodate_label(item, debuglog):
+    if nodate_label_id in item['labels']:
+        return
+    labels = item['labels']
+    debuglog.log('Updating %s with "NoDate" label', item['content'])
+    labels.append(nodate_label_id)
+    item.update(labels=labels)
+
+def remove_nodate_label(item, debuglog):
+    if not nodate_label_id in item['labels']:
+        return
+    labels = item['labels']
+    debuglog.log('Removing "NoDate" label from %s' % (item['content']))
+    labels.remove(nodate_label_id)
+    item.update(labels=labels)
+
+def set_date(item, props, debuglog):
+    if item['due'] is None:
+        new_due = props.delay if props.delay is not None else 'today'
+        item.update(due={'string' : new_due })
+        debuglog.log('Setting due date to %s for item %s' % (new_due, item['content']))
+
+def is_recurring(item):
+    due = item['due']
+    return due['is_recurring'] if not due is None else False
+
+def is_due(item):
+    due = parse_due(item)
+    if due is None: return False
+    # logging.debug("is_active: due parsed: %s", due)
+    return due <= now
+
+def parse_due(item):
+    due = item['due']
+    if due is None: return None
+    tz = due['timezone'] if due['timezone'] is not None else timezone
+
+    try:
+        due_date = datetime.strptime(due['date'], '%Y-%m-%dT%H:%M:%S')
+    except:
+        due_date = datetime.strptime(due['date'], '%Y-%m-%d')
+
+    return tz.localize(due_date)
+
+if __name__ == '__main__':
+    main()
