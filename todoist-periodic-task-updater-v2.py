@@ -252,7 +252,7 @@ def add_nodate_label(item, debuglog):
     if nodate_label_id in item['labels']:
         return
     labels = item['labels']
-    debuglog.log('Updating %s with "NoDate" label', item['content'])
+    debuglog.log('Updating %s with "NoDate" label' % item['content'])
     labels.append(nodate_label_id)
     item.update(labels=labels)
 
