@@ -302,12 +302,7 @@ def main():
         child_items = get_subitems(items, item, include_completed = is_active_recurring)
         item_metadata = parse_item_metadata(item)
 
-        # Fix-recurring task = true is a special case: when a recurring task becomes active,
-        # which is neither serial, nor parallel, all of its children should be uncompleted
-        # so that the whole tree shows up in Todoist.
-        fix_recurring_task = is_active_recurring and item_metadata.type is None
-
-        is_considered_leaf = len(child_items) == 0
+        is_considered_leaf = len(child_items) == 0 # why is it here??? or item_metadata.type is None
 
         # Defines how the item and it's subtasks (if any) should be processed:
         # * 'activate': make the tree active: put at least one element into the 'Today' view.
@@ -315,23 +310,22 @@ def main():
         # * <None>: do not change the tree
         tree_prcessing_mode = (
             'activate'
-                if (processing_mode == 'serial' and is_first)
+                if ((processing_mode == 'serial' and is_first)
                     or processing_mode == 'parallel'
-                    or is_active_recurring
+                    or is_active_recurring)
             else 'take'
-                if processing_mode == 'serial'
+                if (processing_mode == 'serial'
                     or processing_mode == 'inactive'
-                    or item_metadata.type is not None
+                    or item_metadata.type is not None)
             else None)
 
         # Defines how to process the actual item:
         # * 'activate': make item visible in the 'Today' view
         # * 'take': take ownership of the item: it will be owned by this automation.
-        # * <None>: does not change the item
+        # * <None>: does not change the tree
         item_processing_mode = (
             'activate'
-                if tree_prcessing_mode == 'activate'
-                    and (is_considered_leaf or fix_recurring_task)
+                if tree_prcessing_mode == 'activate' and is_considered_leaf
             else 'take'
                 if tree_prcessing_mode == 'activate' or tree_prcessing_mode == 'take'
             else None)
@@ -347,13 +341,12 @@ def main():
         # | <None>               | serial    | serial                |
         # | <None>               | parallel  | parallel              |
         # | <None>               | <None>    | <None>                |
-        # Special case: fix_recurring_task ->  inactive
 
         child_processing_mode = (
-            'inactive' if fix_recurring_task
-            else None if item_metadata.type == None
+            None if item_metadata.type == None
             else 'inactive' if tree_prcessing_mode == 'take'
-            else item_metadata.type)
+            else item_metadata.type
+        )
 
         logging.debug('Is Recurring: (%s, %s), Tree processing mode: %s, child items: %d, item processing mode: %s, Item type: %s, Child processing mode: %s',
             is_recurring, is_active_recurring, tree_prcessing_mode, len(child_items), item_processing_mode, item_metadata.type, child_processing_mode)
