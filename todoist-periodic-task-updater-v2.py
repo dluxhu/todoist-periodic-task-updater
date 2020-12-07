@@ -18,6 +18,7 @@ timezone = None
 now = None
 args = None
 nodate_label_id = None
+rerun = False
 
 def main():
     """Main process function."""
@@ -28,6 +29,8 @@ def main():
     api = connect(debuglog)
 
     while True:
+        global rerun
+        rerun = False
         try:
             api.sync()
             set_timezone_and_now(api)
@@ -37,15 +40,18 @@ def main():
 
             if len(api.queue):
                 debuglog.log('changes queued for sync: %s'% str(api.queue))
-                if args.execute:
+                if args.execute or args.execute1:
                     logging.debug('Commiting to Todoist.')
                     api.commit()
+                    if args.execute1: rerun = False
+                    if rerun: continue
             else:
                 debuglog.log('No changes queued, skipping sync.')
 
         except Exception as e:
             logging.exception('Error trying to sync with Todoist API: %s' % str(e))
         
+
         if args.periodical_sync_sec is None:
             break
 
@@ -61,6 +67,7 @@ def parse_args():
     parser.add_argument('--parallel_suffix', default='(=)')
     parser.add_argument('--serial_suffix', default='(-)')
     parser.add_argument('-x', '--execute', action='store_true', default=False, help='Execute the changes (otherwise just prints them)')
+    parser.add_argument('-1', '--execute1', action='store_true', default=False, help='Execute the first round of changes (useful for debugging')
     global args
     args = parser.parse_args()
 
@@ -133,9 +140,9 @@ def process_project(api, parentdebuglog, project):
     props = Props(project['name'].strip())
     set_parallel_or_serial(props)
     props.owned = None
-    props.tree_active = props.is_parallel or props.is_serial
     props.is_recurring = None
-    props.recurring_reactivation_tree = None
+    props.recurring_reactivation = None
+    props.suppress_tree_due_now = None
 
     debuglog = parentdebuglog.sublogger('Project: %s' % props)
 
@@ -143,25 +150,16 @@ def process_project(api, parentdebuglog, project):
     items = sorted(api.items.all(lambda x: x.data['project_id'] == project.data['id']),
                    key=lambda x: x.data['child_order'])
     
-    (completed_items, active_items) = get_top_level_items(items)
-
-    for idx, item in enumerate(completed_items):
-        process_completed_item(items, props, debuglog, item, idx)
+    (unused_completed_items, active_items) = get_top_level_items(items)
 
     for idx, item in enumerate(active_items):
-        process_active_item(items, props, debuglog, item, idx, idx + len(completed_items))
+        process_item(items, props, debuglog, item, idx)
 
-def process_completed_item(items, parentprops, parentdebuglog, item, idx):
-    if parentprops.recurring_reactivation_tree:
-        uncomplete_item(item, parentdebuglog)
-        process_active_item(items, parentprops, parentdebuglog, item, idx, idx)
-
-def process_active_item(items, parentprops, parentdebuglog, item, all_idx, active_idx):
+def process_item(items, parentprops, parentdebuglog, item, idx):
     props = Props(item['content'])
     set_parallel_or_serial(props)
 
-    props.first = all_idx == 0
-    props.first_active = active_idx == 0
+    props.first = idx == 0
 
     (completed_subitems, active_subitems) = get_subitems(items, item)
 
@@ -174,31 +172,31 @@ def process_active_item(items, parentprops, parentdebuglog, item, all_idx, activ
     # Recurring reactivation: when a recurring parallel or serial task becomes due, all of
     # its subtasks will be uncompleted (re-activated) and the recurring task itself will be
     # completed.
-    props.recurring_reactivation_item = props.is_recurring and props.is_due and (
+    props.recurring_reactivation = props.is_recurring and props.is_due and (
         props.is_parallel or props.is_serial
     )
-    props.recurring_reactivation_tree = (
-        parentprops.recurring_reactivation_tree or props.recurring_reactivation_item
-    )
 
-    props.tree_active = (
-        (
-            parentprops.tree_active and (
-                parentprops.is_parallel or (parentprops.is_serial and props.first)
-            )
-        )
-        or (props.is_parallel or props.is_serial)
-    )
+    props.due_now = not parentprops.suppress_tree_due_now and (
+        parentprops.is_parallel or parentprops.is_serial)
 
-    props.active = props.tree_active and not props.has_active_subitems
+    props.suppress_tree_due_now = props.due_now and (parentprops.is_serial and not props.first)
 
+    props.item_due_now = props.due_now and not props.suppress_tree_due_now and not (
+        (props.is_parallel or props.is_serial) and props.has_active_subitems)
 
     debuglog = parentdebuglog.sublogger('Item: %s' % props)
 
-    if props.recurring_reactivation_item:
+    if props.recurring_reactivation:
         complete_item(item, debuglog)
+        for item in completed_subitems:
+            reactivate_completed_subtree(items, props, debuglog, item)
+        # We need to rerun the sync after the subtree is completed, because these items
+        # will be active in the next run.
+        global rerun
+        rerun = True
+        return
 
-    if props.active:
+    if props.item_due_now:
         activate_item(item, props, debuglog)
     elif props.owned:
         own_item(item, debuglog)
@@ -207,12 +205,23 @@ def process_active_item(items, parentprops, parentdebuglog, item, all_idx, activ
         debuglog.log('## Updating last run timestamp')
         item.update(content = LAST_RUN_CONST + ': %s %s' % (socket.gethostname(), now))
 
-    for idx, item in enumerate(completed_subitems):
-        process_completed_item(items, props, debuglog, item, idx)
-
     for idx, item in enumerate(active_subitems):
-        process_active_item(items, props, debuglog, item, idx, idx + len(completed_subitems))
+        process_item(items, props, debuglog, item, idx)
 
+def reactivate_completed_subtree(items, parentprops, parentdebuglog, item):
+    props = Props(item['content'])
+
+    debuglog = parentdebuglog.sublogger('Reactivating item: %s' % props)
+
+    uncomplete_item(item, debuglog)
+
+    (completed_subitems, unused_active_subitems) = get_subitems(items, item)
+    for item in completed_subitems:
+        reactivate_completed_subtree(items, props, debuglog, item)
+
+    # Note: for now, we just reactivate the completed items, but it might be possible that
+    # there are some completed items under currently active tasks. Consider recursing into
+    # active_subitems, too
 
 def set_parallel_or_serial(props):
     name = props.name
@@ -255,9 +264,10 @@ def activate_item(item, props, debuglog):
 
 def uncomplete_item(item, debuglog):
     if item['date_completed'] is not None:
-        debuglog.log('## Uncompleting following item & removing due date if needed:')
+        debuglog.log('## Uncompleting item')
         item.uncomplete()
         if item['due'] is not None:
+            debuglog.log('## Removing due date')
             item.update(due=None)
 
 def complete_item(item, debuglog):
