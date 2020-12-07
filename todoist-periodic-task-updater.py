@@ -9,10 +9,6 @@ def main():
         processing_mode: 'serial', 'parallel', 'inactive' (inactive part of serial), null (parent does not specify)
         """
 
-        due_obj = item['due']
-        is_recurring = due_obj['is_recurring'] if not due_obj is None else False
-        is_active_recurring = is_recurring and is_active(item)
-
         # Fix-recurring task = true is a special case: when a recurring task becomes active,
         # which is neither serial, nor parallel, all of its children should be uncompleted
         # so that the whole tree shows up in Todoist.

@@ -112,9 +112,9 @@ def set_timezone_and_now(api):
     logging.debug('Timezone: %s, now: %s', timezone, now)
 
 class Props:
-    def __init__(self):
+    def __init__(self, name):
         # to avoid pylint warnings:
-        self.name = None
+        self.name = name
         self.is_parallel = None
         self.is_serial = None
 
@@ -130,12 +130,12 @@ def process_project(api, parentdebuglog, project):
         parentdebuglog.log('Project %s is archived, skipping.' % project.data['name'])
         return
 
-    props = Props()
-    props.name = project['name'].strip()
+    props = Props(project['name'].strip())
     set_parallel_or_serial(props)
     props.owned = None
     props.tree_active = props.is_parallel or props.is_serial
     props.is_recurring = None
+    props.recurring_reactivation_tree = None
 
     debuglog = parentdebuglog.sublogger('Project: %s' % props)
 
@@ -152,11 +152,12 @@ def process_project(api, parentdebuglog, project):
         process_active_item(items, props, debuglog, item, idx, idx + len(completed_items))
 
 def process_completed_item(items, parentprops, parentdebuglog, item, idx):
-    pass
+    if parentprops.recurring_reactivation_tree:
+        uncomplete_item(item, parentdebuglog)
+        process_active_item(items, parentprops, parentdebuglog, item, idx, idx)
 
 def process_active_item(items, parentprops, parentdebuglog, item, all_idx, active_idx):
-    props = Props()
-    props.name = item['content']
+    props = Props(item['content'])
     set_parallel_or_serial(props)
 
     props.first = all_idx == 0
@@ -170,6 +171,16 @@ def process_active_item(items, parentprops, parentdebuglog, item, all_idx, activ
     props.is_recurring = is_recurring(item)
     props.is_due = is_due(item)
 
+    # Recurring reactivation: when a recurring parallel or serial task becomes due, all of
+    # its subtasks will be uncompleted (re-activated) and the recurring task itself will be
+    # completed.
+    props.recurring_reactivation_item = props.is_recurring and props.is_due and (
+        props.is_parallel or props.is_serial
+    )
+    props.recurring_reactivation_tree = (
+        parentprops.recurring_reactivation_tree or props.recurring_reactivation_item
+    )
+
     props.tree_active = (
         (
             parentprops.tree_active and (
@@ -177,13 +188,15 @@ def process_active_item(items, parentprops, parentdebuglog, item, all_idx, activ
             )
         )
         or (props.is_parallel or props.is_serial)
-    ) and not (
-        props.is_recurring and not props.is_due
     )
-    
+
     props.active = props.tree_active and not props.has_active_subitems
 
+
     debuglog = parentdebuglog.sublogger('Item: %s' % props)
+
+    if props.recurring_reactivation_item:
+        complete_item(item, debuglog)
 
     if props.active:
         activate_item(item, props, debuglog)
@@ -191,6 +204,7 @@ def process_active_item(items, parentprops, parentdebuglog, item, all_idx, activ
         own_item(item, debuglog)
 
     if item['content'].startswith(LAST_RUN_CONST):
+        debuglog.log('## Updating last run timestamp')
         item.update(content = LAST_RUN_CONST + ': %s %s' % (socket.gethostname(), now))
 
     for idx, item in enumerate(completed_subitems):
@@ -232,27 +246,30 @@ def has_delay_suffix(str):
         return (None, str)
 
 def own_item(item, debuglog):
-    uncomplete_item(item, debuglog)
     if item['due'] is None:
         add_nodate_label(item, debuglog)
 
 def activate_item(item, props, debuglog):
-    uncomplete_item(item, debuglog)
     set_date(item, props, debuglog)
     remove_nodate_label(item, debuglog)
 
 def uncomplete_item(item, debuglog):
     if item['date_completed'] is not None:
-        debuglog.log('Uncompleting task')
+        debuglog.log('## Uncompleting following item & removing due date if needed:')
         item.uncomplete()
         if item['due'] is not None:
             item.update(due=None)
+
+def complete_item(item, debuglog):
+    if item['date_completed'] is None:
+        debuglog.log('## Completing the item')
+        item.close()
 
 def add_nodate_label(item, debuglog):
     if nodate_label_id in item['labels']:
         return
     labels = item['labels']
-    debuglog.log('Updating %s with "NoDate" label' % item['content'])
+    debuglog.log('## Updating %s with "NoDate" label' % item['content'])
     labels.append(nodate_label_id)
     item.update(labels=labels)
 
@@ -260,15 +277,15 @@ def remove_nodate_label(item, debuglog):
     if not nodate_label_id in item['labels']:
         return
     labels = item['labels']
-    debuglog.log('Removing "NoDate" label from %s' % (item['content']))
+    debuglog.log('## Removing "NoDate" label from %s' % (item['content']))
     labels.remove(nodate_label_id)
     item.update(labels=labels)
 
 def set_date(item, props, debuglog):
     if item['due'] is None:
         new_due = props.delay if props.delay is not None else 'today'
+        debuglog.log('## Setting due date to %s for item %s' % (new_due, item['content']))
         item.update(due={'string' : new_due })
-        debuglog.log('Setting due date to %s for item %s' % (new_due, item['content']))
 
 def is_recurring(item):
     due = item['due']
