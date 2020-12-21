@@ -164,6 +164,7 @@ def process_item(items, parentprops, parentdebuglog, item, idx):
     (completed_subitems, active_subitems) = get_subitems(items, item)
 
     props.has_active_subitems = len(active_subitems) > 0
+    props.has_completed_subitems = len(completed_subitems) > 0 or None
 
     props.owned = parentprops.owned or props.is_parallel or props.is_serial
     props.is_recurring = is_recurring(item)
