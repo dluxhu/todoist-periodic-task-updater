@@ -159,6 +159,7 @@ def process_item(items, parentprops, parentdebuglog, item, idx):
     props = Props(item['content'])
     set_parallel_or_serial(props)
 
+    props.id = item.data['id']
     props.first = idx == 0
 
     (completed_subitems, active_subitems) = get_subitems(items, item)
@@ -242,7 +243,7 @@ def get_subitems(items, parent_item):
     active_result_items = []
     for item in items:
         if item['parent_id'] == parent_id:
-            if item['date_completed'] is None:
+            if item.data['checked'] == 0:
                 active_result_items.append(item)
             else:
                 completed_result_items.append(item)
