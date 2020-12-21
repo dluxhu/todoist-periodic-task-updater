@@ -26,6 +26,8 @@ def main():
 
     api.sync()
 
+    print("Projects: %d, Items: %d" % (len(api.projects.all()), len(api.items.all())))
+
     for project in api.projects.all():
         print(project)
 
