@@ -34,6 +34,10 @@ def main():
     for item in api.items.all():
         print(item)
 
+    completed = api.completed.get_all(limit = 200);
+    print("Completed:")
+    print(completed)
+
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument('-a', '--api_key', help='Todoist API Key')
