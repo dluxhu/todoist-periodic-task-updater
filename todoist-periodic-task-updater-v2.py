@@ -174,9 +174,10 @@ def process_item(items, parentprops, parentdebuglog, item, idx):
     # Recurring reactivation: when a recurring parallel or serial task becomes due, all of
     # its subtasks will be uncompleted (re-activated) and the recurring task itself will be
     # completed.
-    props.recurring_reactivation = props.is_recurring and props.is_due and (
-        props.is_parallel or props.is_serial
-    )
+    # Note: this does not work now.
+    props.recurring_reactivation = None # props.is_recurring and props.is_due and (
+    #     props.is_parallel or props.is_serial
+    # )
 
     props.due_now = not parentprops.suppress_tree_due_now and (
         parentprops.is_parallel or parentprops.is_serial)
