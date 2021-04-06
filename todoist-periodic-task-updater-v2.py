@@ -305,6 +305,7 @@ def remove_nodate_label(item, debuglog):
 def set_date(item, props, debuglog):
     if set(item['labels']).intersection(next_label_ids):
         debuglog.log('## Not setting due date for item %s, because one of the "Next" labels exist' % (item['content']))
+        return
     if item['due'] is None:
         new_due = props.delay if props.delay is not None else 'today'
         debuglog.log('## Setting due date to %s for item %s' % (new_due, item['content']))
