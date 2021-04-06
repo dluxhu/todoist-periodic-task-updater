@@ -29,6 +29,10 @@ Based on [NextAction](https://github.com/nikdoof/NextAction) by [https://github.
 * A task or subtask is _owned_ by the script, if it is in a subtree of a project or item that is either parallel or serial.
 * If a task is _owned_, then it either has a due date set or has the `NoDate` label applied to it.
 
+## "Next" labels
+
+It is possible to specify a prefix for labels that are added for tasks that are available to be done. There can be multiple, because you might want to separate them by category. In the default case, this prefix is `::`. If a task has a label with this prefix, then today's date is not added to the task, because it is already considered to be 'known about'.
+
 ## Recurring task handling
 
 * A recurring task can be also serial or parallel (identified by the postfixes mentioned above)

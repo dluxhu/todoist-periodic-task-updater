@@ -18,6 +18,7 @@ timezone = None
 now = None
 args = None
 nodate_label_id = None
+next_label_ids = set()
 rerun = False
 
 def main():
@@ -68,6 +69,7 @@ def parse_args():
     parser.add_argument('--serial_suffix', default='(-)')
     parser.add_argument('-x', '--execute', action='store_true', default=False, help='Execute the changes (otherwise just prints them)')
     parser.add_argument('-1', '--execute1', action='store_true', default=False, help='Execute the first round of changes (useful for debugging')
+    parser.add_argument('--next_prefix', default='::', help='Prefix for labels that store "Next" tasks (tasks that are available to do)')
     global args
     args = parser.parse_args()
 
@@ -98,6 +100,12 @@ def connect(parentdebuglog):
     else:
         debuglog.error("Label %s doesn't exist, please create it." % args.label)
         sys.exit(1)
+    global next_label_ids
+    next_label_ids = set(map(
+        lambda x: x['id'],
+        api.labels.all(lambda x: x['name'].startswith(args.next_prefix))
+    ))
+    debuglog.log('"Next" label ids: %s' % (next_label_ids))
     
     return api
 
@@ -295,6 +303,8 @@ def remove_nodate_label(item, debuglog):
     item.update(labels=labels)
 
 def set_date(item, props, debuglog):
+    if set(item['labels']).intersection(next_label_ids):
+        debuglog.log('## Not setting due date for item %s, because one of the "Next" labels exist' % (item['content']))
     if item['due'] is None:
         new_due = props.delay if props.delay is not None else 'today'
         debuglog.log('## Setting due date to %s for item %s' % (new_due, item['content']))
